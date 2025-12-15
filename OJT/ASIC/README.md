@@ -12,6 +12,8 @@
 ```
 * Signals
 ```
+  FULL
+  EMPTY
   AlMOST FULL
   AlMOST EMPTY
   PROGRAM FULL
