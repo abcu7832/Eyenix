@@ -4,14 +4,15 @@
 * Verilog
 
 ### FIFO
+* Asynchronous
 * CDC
-  ***GRAY CODE***
-  ***2 SYNC***
+  -***GRAY CODE***
+  -***2 SYNC***
 * Signals
-  ***AlMOST FULL***
-  ***AlMOST EMPTY***
-  ***PROGRAM FULL***
-  ***PROGRAM EMPTY***
+  -***AlMOST FULL***
+  -***AlMOST EMPTY***
+  -***PROGRAM FULL***
+  -***PROGRAM EMPTY***
 * Parameterize
 
 ### CAMERA INTERFACE
