@@ -2,6 +2,7 @@
 ### 환경
 * Vivado
 * Verilog
+* SystemVerilog
 
 ### FIFO
 * Asynchronous
