@@ -1,0 +1,471 @@
+//*****************************************************************************
+//  File Name           : async_fifo_mn_stage1.v
+//-----------------------------------------------------------------------------
+//  Description         : Asynchronous FIFO (M writers : N readers) - Stage 1
+//
+//  Stage 1 meaning (학습/구현용):
+//   - wr_clk 도메인: M개의 writer 요청을 Round-Robin으로 1개만 선택하여
+//     "단일 write port" FIFO에 1/cycle로 push
+//   - rd_clk 도메인: N개의 reader 요청을 Round-Robin으로 1개만 선택하여
+//     "단일 read port" FIFO에서 1/cycle로 pop
+//   - 즉, 내부 FIFO 자체는 1:1 async FIFO(Gray ptr + 2FF CDC) 구조를 유지하되,
+//     양쪽에서 Arbitration(중재)만 추가한 M:N 버전.
+//
+//  Interface policy:
+//   - full/afull/pfull/remain : FIFO 전체 기준 (global)
+//   - empty/aempty/pempty/depth: FIFO 전체 기준 (global)
+//   - Writer별로 "이번 사이클에 내 write가 실제로 수락되었는지" o_wr_fire[M]
+//   - Reader별로 "이번 사이클에 내 read가 실제로 수행되었는지" o_rd_valid[N]
+//     + 그때 캡처된 데이터가 각 reader의 holding register o_rd_data[N]에 갱신됨
+//
+//  Notes:
+//   - FIFO_Memory의 read는 combinational(assign rdata = mem[raddr])이므로
+//     rd_fire가 1인 사이클에 선택된 raddr의 데이터가 rd_data로 바로 보이고,
+//     그 값을 holding reg에 캡처합니다.
+//   - 만약 block RAM 등 동기 read(1-cycle latency)로 바꾸면,
+//     rd_valid 타이밍/캡처 파이프라인을 1클럭 밀어야 합니다.
+//*****************************************************************************
+
+module async_fifo_mn_stage1 #(
+    parameter integer WIDTH      = 8,
+    parameter integer DEPTH      = 8,
+    parameter integer PFULL_TH   = 10,
+    parameter integer PEMPTY_TH  = 10,
+    parameter integer M_WRITERS  = 2,
+    parameter integer N_READERS  = 2
+)(
+    // ----------------------------------------------------------------
+    // write side (wr_clk domain)
+    // ----------------------------------------------------------------
+    input                           i_wr_clk,
+    input                           i_wr_rstn,
+    input      [M_WRITERS-1:0]      i_wr_en,
+    input      [M_WRITERS*WIDTH-1:0]i_wr_data,
+
+    output                          o_wr_full,
+    output                          o_wr_afull,
+    output                          o_wr_pfull,
+    output     [DEPTH:0]            o_wr_remain,
+
+    // per-writer "accepted pulse"
+    output     [M_WRITERS-1:0]      o_wr_fire,
+
+    // ----------------------------------------------------------------
+    // read side (rd_clk domain)
+    // ----------------------------------------------------------------
+    input                           i_rd_clk,
+    input                           i_rd_rstn,
+    input      [N_READERS-1:0]      i_rd_en,
+
+    output                          o_rd_empty,
+    output                          o_rd_aempty,
+    output                          o_rd_pempty,
+    output     [DEPTH:0]            o_rd_depth,
+
+    // per-reader delivery (holding + valid pulse)
+    output     [N_READERS-1:0]      o_rd_valid,
+    output     [N_READERS*WIDTH-1:0]o_rd_data
+);
+
+    // =========================================================================
+    // Internal wires
+    // =========================================================================
+    wire [DEPTH-1:0] waddr;
+    wire [DEPTH-1:0] raddr;
+    wire [DEPTH:0]   wptr;
+    wire [DEPTH:0]   rptr;
+    wire [DEPTH:0]   wrptr2;  // wptr synced into rd_clk
+    wire [DEPTH:0]   rwptr2;  // rptr synced into wr_clk
+
+    // =========================================================================
+    // WRITE arbitration (wr_clk)
+    //  - Choose 1 writer per cycle (RR)
+    // =========================================================================
+    localparam WIDX_W = (M_WRITERS <= 1) ? 1 : $clog2(M_WRITERS);
+
+    reg [WIDX_W-1:0] wr_rr_ptr;
+    reg [M_WRITERS-1:0] wr_grant_oh;
+    reg [WIDX_W-1:0] wr_sel;
+    reg wr_found;
+
+    wire [M_WRITERS-1:0] wr_req = i_wr_en & {M_WRITERS{~o_wr_full}};
+
+    integer wk;
+    reg [WIDX_W:0] tmp_1;
+
+    always @(*) begin
+        wr_grant_oh = {M_WRITERS{1'b0}};
+        wr_found    = 1'b0;
+        wr_sel      = wr_rr_ptr;
+
+        for (wk=0; wk<M_WRITERS; wk=wk+1) begin
+            tmp_1 = wr_rr_ptr + wk[WIDX_W-1:0];            
+            if (tmp_1 >= M_WRITERS) begin 
+                tmp_1 = tmp_1 - M_WRITERS;
+            end
+
+            if (!wr_found && wr_req[tmp_1[WIDX_W-1:0]]) begin
+                wr_found = 1'b1;
+                wr_sel   = tmp_1[WIDX_W-1:0];
+            end
+        end
+
+        if (wr_found) begin
+            wr_grant_oh[wr_sel] = 1'b1;
+        end
+    end
+
+    // one push per cycle at most
+    wire winc = wr_found; // already gated by ~full in wr_req
+    assign o_wr_fire = wr_grant_oh & wr_req;
+
+    // select data from chosen writer
+    reg [WIDTH-1:0] wr_data;
+    integer wi;
+    always @(*) begin
+        wr_data = {WIDTH{1'b0}};
+        for (wi=0; wi<M_WRITERS; wi=wi+1) begin
+            if (wr_grant_oh[wi]) begin
+                wr_data = i_wr_data[((wi+1)*WIDTH-1):(wi*WIDTH)];
+            end
+        end
+    end
+
+    // update rr pointer
+    always @(posedge i_wr_clk or negedge i_wr_rstn) begin
+        if (!i_wr_rstn) begin
+            wr_rr_ptr <= 0;
+        end else begin
+            if (wr_found) begin
+                wr_rr_ptr <= (wr_sel==M_WRITERS-1) ? 0 : (wr_sel + 1);
+            end
+        end
+    end
+
+    // =========================================================================
+    // READ arbitration (rd_clk)
+    //  - Choose 1 reader per cycle (RR)
+    // =========================================================================
+    localparam RIDX_W = (N_READERS <= 1) ? 1 : $clog2(N_READERS);
+
+    reg [RIDX_W-1:0] rd_rr_ptr;
+    reg [N_READERS-1:0] rd_grant_oh;
+    reg [RIDX_W-1:0] rd_sel;
+    reg rd_found;
+
+    wire [N_READERS-1:0] rd_req = i_rd_en & {N_READERS{~o_rd_empty}};
+
+    integer rk;
+    reg [RIDX_W:0] tmp_2;
+
+    always @(*) begin
+        rd_grant_oh = {N_READERS{1'b0}};
+        rd_found    = 1'b0;
+        rd_sel      = rd_rr_ptr;
+
+        for (rk=0; rk<N_READERS; rk=rk+1) begin
+            tmp_2 = rd_rr_ptr + rk[RIDX_W-1:0];
+            if (tmp_2 >= N_READERS) begin 
+                tmp_2 = tmp_2 - N_READERS;
+            end
+
+            if (!rd_found && rd_req[tmp_2[RIDX_W-1:0]]) begin
+                rd_found = 1'b1;
+                rd_sel   = tmp_2[RIDX_W-1:0];
+            end
+        end
+
+        if (rd_found) begin 
+            rd_grant_oh[rd_sel] = 1'b1;
+        end
+    end
+
+    wire rinc_int = rd_found; // already gated by ~empty in rd_req
+
+    always @(posedge i_rd_clk or negedge i_rd_rstn) begin
+        if (!i_rd_rstn) begin
+            rd_rr_ptr <= 0;
+        end else begin
+            if (rd_found) begin
+                rd_rr_ptr <= (rd_sel==N_READERS-1) ? 0 : (rd_sel+1);
+            end
+        end
+    end
+
+    // =========================================================================
+    // Core async FIFO pointers (1:1 그대로)
+    // =========================================================================
+
+    // write pointer/full (global)
+    wptr_full #(
+        .DEPTH    (DEPTH),
+        .AFULL_TH (PFULL_TH)
+    ) u_wptr_full (
+        .wclk        (i_wr_clk),
+        .wrst_n      (i_wr_rstn),
+        .winc        (winc),
+        .wfull       (o_wr_full),
+        .afull       (o_wr_afull),
+        .pfull       (o_wr_pfull),
+        .waddr       (waddr),
+        .wptr        (wptr),
+        .rwptr2      (rwptr2),
+        .o_wr_remain (o_wr_remain)
+    );
+
+    // rptr sync to wclk
+    sync #(.DEPTH(DEPTH)) u_sync_r2w (
+        .clk   (i_wr_clk),
+        .rst_n (i_wr_rstn),
+        .ptr   (rptr),
+        .ptr2  (rwptr2)
+    );
+
+    // wptr sync to rclk
+    sync #(.DEPTH(DEPTH)) u_sync_w2r (
+        .clk   (i_rd_clk),
+        .rst_n (i_rd_rstn),
+        .ptr   (wptr),
+        .ptr2  (wrptr2)
+    );
+
+    // read pointer/empty (global)
+    rptr_empty #(
+        .DEPTH     (DEPTH),
+        .AEMPTY_TH (PEMPTY_TH)
+    ) u_rptr_empty (
+        .rclk      (i_rd_clk),
+        .rrst_n    (i_rd_rstn),
+        .rinc      (rinc_int),
+        .rempty    (o_rd_empty),
+        .aempty    (o_rd_aempty),
+        .pempty    (o_rd_pempty),
+        .raddr     (raddr),
+        .rptr      (rptr),
+        .wrptr2    (wrptr2),
+        .o_rd_depth(o_rd_depth)
+    );
+
+    // =========================================================================
+    // Memory (single write + single read port)
+    // =========================================================================
+    wire [WIDTH-1:0] rd_data;
+
+    FIFO_Memory #(
+        .WIDTH(WIDTH),
+        .DEPTH(DEPTH)
+    ) u_mem (
+        .wclk   (i_wr_clk),
+        .wdata  (wr_data),
+        .wclken (winc && ~o_wr_full),
+        .waddr  (waddr),
+        .rdata  (rd_data),
+        .raddr  (raddr)
+    );
+
+    // =========================================================================
+    // Per-reader holding registers + valid pulse
+    // =========================================================================
+    reg [N_READERS*WIDTH-1:0] rd_data_regs;
+    reg [N_READERS-1:0]       rd_valid_regs;
+
+    integer rm;
+    always @(posedge i_rd_clk or negedge i_rd_rstn) begin
+        if (!i_rd_rstn) begin
+            rd_data_regs  <= {(N_READERS*WIDTH){1'b0}};
+            rd_valid_regs <= {N_READERS{1'b0}};
+        end else begin
+            rd_valid_regs <= {N_READERS{1'b0}}; // pulse
+
+            // when a read happens, deliver to granted reader only
+            if (rinc_int) begin
+                for (rm=0; rm<N_READERS; rm=rm+1) begin
+                    if (rd_grant_oh[rm]) begin
+                        rd_data_regs[((rm+1)*WIDTH-1):(rm*WIDTH)] <= rd_data;
+                        rd_valid_regs[rm]               <= 1'b1;
+                    end
+                end
+            end
+        end
+    end
+
+    assign o_rd_data  = rd_data_regs;
+    assign o_rd_valid = rd_valid_regs;
+
+endmodule
+
+module FIFO_Memory #(
+    parameter WIDTH = 8,
+    parameter DEPTH = 8
+) (
+    // write side
+    input wclk,
+    input [WIDTH-1:0] wdata,
+    input wclken, // winc
+    input [DEPTH-1:0] waddr,
+    // read side
+    output [WIDTH-1:0] rdata,
+    input [DEPTH-1:0] raddr
+);
+    localparam MEM_SIZE = (1 << DEPTH);
+
+    reg [WIDTH-1:0] register_memory [0:MEM_SIZE-1];
+
+    always @(posedge wclk) begin
+        if (wclken) begin
+            register_memory[waddr] <= wdata;
+        end
+    end
+
+    assign rdata = register_memory[raddr];
+endmodule
+
+module rptr_empty #(
+    parameter DEPTH = 8,
+    parameter AEMPTY_TH = 2
+) (
+    input rclk,
+    input rrst_n,
+    input rinc,
+    output reg rempty,
+    output reg aempty,
+    output reg pempty,
+    output [DEPTH-1:0] raddr,
+    output reg [DEPTH:0] rptr,
+    input [DEPTH:0] wrptr2,
+    output [DEPTH:0] o_rd_depth
+);
+
+    function automatic [DEPTH:0] gray2bin(input [DEPTH:0] g);
+        integer i;
+        begin
+            gray2bin[DEPTH] = g[DEPTH];
+            for (i = DEPTH-1; i >= 0; i=i-1) begin
+                gray2bin[i] = gray2bin[i+1] ^ g[i];
+            end
+        end
+    endfunction
+
+    reg [DEPTH:0] rbin;
+    wire [DEPTH:0] rgraynext, rbinnext;
+
+    assign raddr    = rbin[DEPTH-1:0];
+    assign rbinnext = rbin + (rinc & ~rempty);
+    assign rgraynext= (rbinnext>>1) ^ rbinnext;
+
+    always @(posedge rclk or negedge rrst_n) begin
+        if (!rrst_n) begin
+            {rbin, rptr} <= 0;
+        end else begin
+            {rbin, rptr} <= {rbinnext, rgraynext};
+        end
+    end
+
+    wire [DEPTH:0] wbin_sync, occ_r;
+
+    assign wbin_sync  = gray2bin(wrptr2);
+    assign occ_r      = wbin_sync - rbinnext;
+    assign o_rd_depth = occ_r;
+
+    wire rempty_val = (rgraynext == wrptr2);
+    wire aempty_val = (occ_r == 1);
+    wire pempty_val = (occ_r <= AEMPTY_TH);
+
+    always @(posedge rclk or negedge rrst_n) begin
+        if (!rrst_n) begin
+            rempty <= 1;
+            aempty <= 1;
+            pempty <= 1;
+        end else begin
+            rempty <= rempty_val;
+            aempty <= aempty_val;
+            pempty <= pempty_val;
+        end
+    end
+endmodule
+
+module wptr_full #(
+    parameter DEPTH = 8,
+    parameter AFULL_TH = 2
+) (
+    input wclk,
+    input wrst_n,
+    input winc,
+    output reg wfull,
+    output reg afull,
+    output reg pfull,
+    output [DEPTH-1:0] waddr,
+    output reg [DEPTH:0] wptr,
+    input [DEPTH:0] rwptr2,
+    output [DEPTH:0] o_wr_remain
+);
+
+    function automatic [DEPTH:0] gray2bin(input [DEPTH:0] g);
+        integer i;
+        begin
+            gray2bin[DEPTH] = g[DEPTH];
+            for (i = DEPTH-1; i >= 0; i=i-1) begin
+                gray2bin[i] = gray2bin[i+1] ^ g[i];
+            end
+        end
+    endfunction
+
+    reg  [DEPTH:0] wbin;
+    wire [DEPTH:0] wgraynext, wbinnext;
+
+    assign waddr = wbin[DEPTH-1:0];
+    assign wbinnext = wbin + (winc & ~wfull);
+    assign wgraynext = (wbinnext>>1) ^ wbinnext;
+
+    always @(posedge wclk or negedge wrst_n) begin
+        if (!wrst_n) begin
+            {wbin, wptr} <= 0;
+        end else begin
+            {wbin, wptr} <= {wbinnext, wgraynext};
+        end
+    end
+
+    wire [DEPTH:0] rbin_sync;
+    wire [DEPTH:0] occ_w;
+
+    assign rbin_sync = gray2bin(rwptr2);
+    assign occ_w     = wbinnext - rbin_sync;
+
+    localparam DEPTH_S = (1<<DEPTH);
+    assign o_wr_remain = DEPTH_S - occ_w;
+
+    wire wfull_val = (wgraynext=={~rwptr2[DEPTH:DEPTH-1], rwptr2[DEPTH-2:0]});
+    wire afull_val = (occ_w == DEPTH_S - 1);
+    wire pfull_val = (occ_w >= (DEPTH_S - AFULL_TH));
+
+    always @(posedge wclk or negedge wrst_n) begin
+        if (!wrst_n) begin
+            wfull <= 0;
+            afull <= 0;
+            pfull <= 0;
+        end else begin
+            wfull <= wfull_val;
+            afull <= afull_val;
+            pfull <= pfull_val;
+        end
+    end
+endmodule
+
+module sync #(
+    parameter DEPTH = 8
+) (
+    input clk,
+    input rst_n,
+    input [DEPTH:0] ptr,
+    output reg [DEPTH:0] ptr2
+);
+    reg [DEPTH:0] ptr1;
+
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) begin
+            {ptr2, ptr1} <= 0;
+        end else begin
+            {ptr2, ptr1} <= {ptr1, ptr};
+        end
+    end
+endmodule
