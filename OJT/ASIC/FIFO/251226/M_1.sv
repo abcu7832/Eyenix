@@ -62,118 +62,85 @@ module MtoN_async_fifo #(
         wr_data[FIFO_MEM_SIZE-1:FIFO_MEM_SIZE-M_WRITERS] = wr_req;
     end
 
-// =========================================================================
-// READ control (rd_clk) : N:1, CAPTURE first (FWFT), POP after consumed
-// =========================================================================
-localparam int META_MSB = FIFO_MEM_SIZE-1;
-localparam int META_LSB = FIFO_MEM_SIZE-M_WRITERS;
+    // =========================================================================
+    // READ control (rd_clk) : N:1, CAPTURE first (FWFT), POP after consumed
+    // =========================================================================
+    typedef enum logic { 
+        RD_WAIT=1'b0,
+        RD_HAVE=1'b1
+    } rd_state_e;
 
-typedef enum logic [1:0] { RD_IDLE=2'd0, RD_CAP=2'd1, RD_HAVE=2'd2, RD_POP=2'd3 } rd_state_e;
+    rd_state_e st_q, st_d;
 
-rd_state_e st_q, st_d;
+    logic rinc, rinc_d;
 
-logic rd_en_any;
-logic rinc, rinc_d;
+    logic [FIFO_MEM_SIZE-1:0] packet_q, packet_d;
+    logic [M_WRITERS-1:0]     consumed_q, consumed_d;
 
-logic [FIFO_MEM_SIZE-1:0] packet_q, packet_d;
-logic [M_WRITERS-1:0]     consumed_q, consumed_d;
+    logic [FIFO_MEM_SIZE-1:0] rd_data;
 
-// rd_data는 u_mem.rdata와 연결 (조합 read라고 가정)
-logic [FIFO_MEM_SIZE-1:0] rd_data;
+    wire [M_WRITERS-1:0] mask_q  = packet_q[META_MSB: META_LSB];
+    wire [M_WRITERS-1:0] avail_q = mask_q & ~consumed_q;
 
-wire [M_WRITERS-1:0] mask_q   = packet_q[META_MSB: META_LSB];
-wire [M_WRITERS-1:0] avail_q  = mask_q & ~consumed_q;
+    localparam int META_MSB = FIFO_MEM_SIZE-1;
+    localparam int META_LSB = FIFO_MEM_SIZE-M_WRITERS;
 
-wire [M_WRITERS-1:0] mask_from_mem = rd_data[META_MSB: META_LSB];
-
-assign rd_en_any = |i_rd_en;
-
-always_ff @(posedge i_rd_clk or negedge i_rd_rstn) begin
-  if (!i_rd_rstn) begin
-    st_q       <= RD_IDLE;
-    packet_q   <= '0;
-    consumed_q <= '0;
-    rinc       <= 1'b0;
-  end else begin
-    st_q       <= st_d;
-    packet_q   <= packet_d;
-    consumed_q <= consumed_d;
-    rinc       <= rinc_d;
-  end
-end
-
-integer k;
-logic found;
-
-always_comb begin
-  st_d       = st_q;
-  packet_d   = packet_q;
-  consumed_d = consumed_q;
-  rinc_d     = 1'b0;
-  o_rd_data  = '0;
-
-  case (st_q)
-    // ------------------------------------------------------------
-    // FIFO에 데이터가 생기면 "먼저 캡처" (pop 금지)
-    // ------------------------------------------------------------
-    RD_IDLE: begin
-      consumed_d = '0;
-      if (!o_rd_empty) begin
-        st_d = RD_CAP;
-      end
-    end
-
-    // ------------------------------------------------------------
-    // FWFT: empty==0이면 rd_data가 이미 head를 가리킴
-    // 따라서 여기서 rd_data를 packet에 캡처
-    // ------------------------------------------------------------
-    RD_CAP: begin
-      // 안전장치: mask가 0이면 아직 유효 데이터가 아니라고 보고 대기
-      // (정상이라면 절대 0이 아니어야 함: winc=|wr_req)
-      if (mask_from_mem != '0) begin
-        packet_d   = rd_data;
-        consumed_d = '0;
-        st_d       = RD_HAVE;
-      end
-    end
-
-    // ------------------------------------------------------------
-    // packet_q를 lane 단위로 하나씩 소비
-    // ------------------------------------------------------------
-    RD_HAVE: begin
-      if (rd_en_any) begin
-        found = 1'b0;
-        for (k=0; k<M_WRITERS; k++) begin
-          if (!found && avail_q[k]) begin
-            o_rd_data     = packet_q[k*WIDTH +: WIDTH];
-            consumed_d[k] = 1'b1;
-            found         = 1'b1;
-          end
+    always_ff @(posedge i_rd_clk or negedge i_rd_rstn) begin
+        if (!i_rd_rstn) begin
+            st_q       <= RD_WAIT;
+            packet_q   <= '0;
+            consumed_q <= '0;
+            rinc       <= 1'b0;
+        end else begin
+            st_q       <= st_d;
+            packet_q   <= packet_d;
+            consumed_q <= consumed_d;
+            rinc       <= rinc_d;
         end
-
-        // packet 내 valid lane 다 소비했으면 그때 pop
-        if ( (consumed_d & mask_q) == mask_q ) begin
-          rinc_d     = 1'b1;   // ★ 여기서만 pop
-          consumed_d = '0;
-          st_d       = RD_POP;
-        end
-      end
     end
 
-    // ------------------------------------------------------------
-    // pop이 적용된 다음 사이클: 다음 head를 캡처하러 감
-    // ------------------------------------------------------------
-    RD_POP: begin
-      if (!o_rd_empty) begin
-        st_d = RD_CAP;   // 다음 head 캡처
-      end else begin
-        st_d = RD_IDLE;
-      end
+    integer k;
+    logic found;
+
+    always_comb begin
+        st_d       = st_q;
+        packet_d   = packet_q;
+        consumed_d = consumed_q;
+        rinc_d     = 1'b0;
+        o_rd_data  = '0;
+
+        case (st_q)
+            // FIFO에 데이터가 생기면 register(assign으로 나오는 rd_data)에 저장
+            RD_WAIT: begin
+                consumed_d = '0;
+                if (!o_rd_empty) begin
+                    if (rd_data[META_MSB: META_LSB] != '0) begin
+                        packet_d = rd_data;
+                        st_d     = RD_HAVE;
+                    end                    
+                end
+            end
+            // packet_q를 lane 단위로 하나씩 소비
+            RD_HAVE: begin
+                if (|i_rd_en) begin
+                    found = 1'b0;
+                    for (k=0; k<M_WRITERS; k++) begin
+                        if (!found && avail_q[k]) begin
+                            o_rd_data     = packet_q[k*WIDTH +: WIDTH];
+                            consumed_d[k] = 1'b1;
+                            found         = 1'b1;
+                        end
+                    end
+                    // packet 내 valid data를 다 pop한 경우
+                    if ((consumed_d & mask_q) == mask_q) begin
+                        rinc_d     = 1'b1;   // fifo memory에서 새롭게 pop
+                        consumed_d = '0;
+                        st_d       = RD_IDLE;
+                    end
+                end
+            end
+        endcase
     end
-  endcase
-end
-
-
 
     // =========================================================================
     // 1:1 async FIFO 
