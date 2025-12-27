@@ -21,11 +21,11 @@ end
 //==============================================================================
 // Parameters
 //==============================================================================
-localparam int WIDTH      = 32;
-localparam int DEPTH      = 5;   // FIFO entries = 32
-localparam int PFULL_TH   = 8;
-localparam int PEMPTY_TH  = 8;
-localparam int DEBUG_MODE = 1;
+localparam WIDTH      = 32;
+localparam DEPTH      = 5;   // FIFO entries = 32
+localparam PFULL_TH   = 8;
+localparam PEMPTY_TH  = 8;
+localparam DEBUG_MODE = 1;
 parameter NUM = 10000; // fork join_any (동시에 write read) 수행할 횟수
 
 //==============================================================================
@@ -78,7 +78,7 @@ localparam PFULL_TH   = 2;
 localparam PEMPTY_TH  = 8;
 localparam M_WRITERS  = 1;
 localparam N_READERS  = 8;
-localparam WR_WIDTH = 64;
+localparam WR_WIDTH   = 64;
 //==============================================================================
 // Signals
 //==============================================================================
@@ -105,22 +105,25 @@ logic [DEPTH:0]             o_rd_depth;
 
 logic [N_READERS*WIDTH-1:0] o_rd_data;
 logic [N_READERS-1:0]       o_rd_valid;*/
-logic                        i_wr_clk;
-logic                        i_wr_rstn;
-logic [M_WRITERS-1:0]        i_wr_en;
-logic                       o_wr_full;
-logic                       o_wr_afull;
-logic                       o_wr_pfull;
-logic [WR_WIDTH-1:0]         i_wr_data;
-logic [DEPTH:0]             o_wr_remain;
-logic                        i_rd_clk;
-logic                        i_rd_rstn;
-logic [N_READERS-1:0]        i_rd_en;
-logic                       o_rd_empty;
-logic                       o_rd_aempty;
-logic                       o_rd_pempty;
-logic [N_READERS*WIDTH-1:0] o_rd_data;
-logic [DEPTH:0]             o_rd_depth;
+
+reg                            i_wr_clk;
+reg                            i_wr_rstn;
+reg [M_WRITERS-1:0]            i_wr_en;
+wire                           o_wr_full;
+wire                           o_wr_afull;
+wire                           o_wr_pfull;
+reg [WR_WIDTH-1:0]             i_wr_data;
+wire [DEPTH:0]                 o_wr_remain;
+
+reg                            i_rd_clk;
+reg                            i_rd_rstn;
+reg [N_READERS-1:0]            i_rd_en;
+wire                           o_rd_empty;
+wire                           o_rd_aempty;
+wire                           o_rd_pempty;
+wire [N_READERS*WIDTH-1:0]     o_rd_data;
+wire [DEPTH:0]                 o_rd_depth;
+
 //==============================================================================
 // DUT
 //==============================================================================
