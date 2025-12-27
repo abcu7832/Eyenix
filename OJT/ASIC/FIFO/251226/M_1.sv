@@ -135,7 +135,7 @@ module MtoN_async_fifo #(
                     if ((consumed_d & mask_q) == mask_q) begin
                         rinc_d     = 1'b1;   // fifo memory에서 새롭게 pop
                         consumed_d = '0;
-                        st_d       = RD_IDLE;
+                        st_d       = RD_WAIT;
                     end
                 end
             end
