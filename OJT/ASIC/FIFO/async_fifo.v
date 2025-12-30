@@ -195,6 +195,7 @@ module rptr_empty #(
     output [DEPTH:0] o_rd_depth
 );
     
+    wire [DEPTH:0] wbin_sync, occ_r;
     assign o_rd_depth = occ_r;
 
     // gray code -> binary
@@ -214,8 +215,6 @@ module rptr_empty #(
     assign raddr = rbin[DEPTH-1:0];
     assign rbinnext = rbin + (rinc & ~rempty);// bin = bin + 1
     assign rgraynext = (rbinnext>>1) ^ rbinnext;// gray 변환
-
-    wire [DEPTH:0] wbin_sync, occ_r;
     
     assign wbin_sync = gray2bin(wrptr2);// gray -> binary
     assign occ_r     = wbin_sync - rbinnext;
@@ -261,6 +260,7 @@ module wptr_full #(
     output [DEPTH:0] o_wr_remain
 );
 
+    wire [DEPTH:0] occ_w;
     assign o_wr_remain = (1<<DEPTH) - occ_w;
 
     function automatic [DEPTH:0] gray2bin(input [DEPTH:0] g);
@@ -281,7 +281,6 @@ module wptr_full #(
     assign wgraynext = (wbinnext>>1) ^ wbinnext;// gray 변환
 
     wire [DEPTH:0] rbin_sync;
-    wire [DEPTH:0] occ_w;
 
     assign rbin_sync = gray2bin(rwptr2);
     assign occ_w     = wbinnext - rbin_sync;
