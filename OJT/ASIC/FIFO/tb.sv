@@ -1,11 +1,16 @@
 `timescale 1ns / 1ps
 
-module tb_main;
+module tb_main #(
+    parameter int NUM        = 10000,
+    parameter int WIDTH      = 8,
+    parameter int DEPTH      = 5,
+    parameter int PFULL_TH   = 8,
+    parameter int PEMPTY_TH  = 8,
+    parameter int M_WRITERS  = 1,
+    parameter int N_READERS  = 1
+);
 `include "ansi_display.svh"
 
-//==============================================================================
-// Reset
-//==============================================================================
 reg RSTN;
 reg RSTN_rd;
 
@@ -17,87 +22,24 @@ initial begin
     #400;
     RSTN_rd = 1;
 end
-/*
-//==============================================================================
-// Parameters
-//==============================================================================
-localparam int WIDTH      = 32;
-localparam int DEPTH      = 5;   // FIFO entries = 32
-localparam int PFULL_TH   = 8;
-localparam int PEMPTY_TH  = 8;
-localparam int DEBUG_MODE = 1;
-parameter NUM = 10000; // fork join_any (동시에 write read) 수행할 횟수
 
-//==============================================================================
-// Signals
-//==============================================================================
-reg                 i_wr_clk;
-reg                 i_wr_rstn;
-reg                 i_wr_en;
-wire                o_wr_full;
-wire                o_wr_afull;
-wire                o_wr_pfull;
-reg  [WIDTH-1:0]    i_wr_data;
-wire [DEPTH:0]      o_wr_remain;
+localparam WR_WIDTH = WIDTH * N_READERS;//64
 
-reg                 i_rd_clk;
-reg                 i_rd_rstn;
-reg                 i_rd_en;
-wire                o_rd_empty;
-wire                o_rd_aempty;
-wire                o_rd_pempty;
-wire [WIDTH-1:0]    o_rd_data;
-wire [DEPTH:0]      o_rd_depth;
-
-wire [31:0]         o_wr_count;
-wire [31:0]         o_wr_trial;
-wire [31:0]         o_wr_fail;
-wire [31:0]         o_rd_count;
-wire [31:0]         o_rd_trial;
-wire [31:0]         o_rd_fail;
-
-//==============================================================================
-// DUT
-//==============================================================================
-async_fifo #(
-    .WIDTH(WIDTH),
-    .DEPTH(DEPTH),
-    .PFULL_TH(PFULL_TH),
-	.PEMPTY_TH(PEMPTY_TH),
-    .DEBUG_MODE(DEBUG_MODE)
-) dut (.*);
-*/
-//==============================================================================
-// Parameters
-//==============================================================================
-localparam NUM        = 10000; // fork join_any (동시에 write read) 수행할 횟수
-
-localparam WIDTH      = 8;
-localparam DEPTH      = 5;
-localparam PFULL_TH   = 8;
-localparam PEMPTY_TH  = 8;
-localparam M_WRITERS  = 2;
-localparam N_READERS  = 2;
-
-//==============================================================================
-// Signals
-//==============================================================================
-
-logic                        i_wr_clk;
-logic                        i_wr_rstn;
-logic [M_WRITERS-1:0]        i_wr_en;
+logic                       i_wr_clk;
+logic                       i_wr_rstn;
+logic [M_WRITERS-1:0]       i_wr_en;
 
 logic                       o_wr_full;
 logic                       o_wr_afull;
 logic                       o_wr_pfull;
 logic [DEPTH:0]             o_wr_remain;
 
-logic [M_WRITERS*WIDTH-1:0]  i_wr_data;
-logic [M_WRITERS-1:0]       o_wr_ed;
+logic [M_WRITERS*WIDTH-1:0] i_wr_data;//M:1
+//logic [WR_WIDTH-1:0]        i_wr_data;//1:N
 
-logic                        i_rd_clk;
-logic                        i_rd_rstn;
-logic [N_READERS-1:0]        i_rd_en;
+logic                       i_rd_clk;
+logic                       i_rd_rstn;
+logic [N_READERS-1:0]       i_rd_en;
 
 logic                       o_rd_empty;
 logic                       o_rd_aempty;
@@ -105,12 +47,14 @@ logic                       o_rd_pempty;
 logic [DEPTH:0]             o_rd_depth;
 
 logic [N_READERS*WIDTH-1:0] o_rd_data;
-logic [N_READERS-1:0]       o_rd_valid;
+
+//logic [N_READERS-1:0]       o_rd_valid; // 1:N에서만 사용
 
 //==============================================================================
 // DUT
 //==============================================================================
-MtoN_async_fifo #(
+
+MtoOne_async_fifo #(
     .WIDTH(WIDTH),
     .DEPTH(DEPTH),
     .PFULL_TH(PFULL_TH),
@@ -119,49 +63,61 @@ MtoN_async_fifo #(
     .N_READERS(N_READERS)
 ) dut(.*);
 
+/*
+OnetoN_async_fifo #(
+    .WIDTH(WIDTH),
+    .DEPTH(DEPTH),
+    .PFULL_TH(PFULL_TH),
+    .PEMPTY_TH(PEMPTY_TH),
+    .M_WRITERS(M_WRITERS),
+    .N_READERS(N_READERS),
+    .WR_WIDTH(WR_WIDTH)
+) dut(.*);
+*/
 //==============================================================================
 // Clocks (Async)
 //==============================================================================
 initial begin
     i_wr_clk = 0;
-    //forever #4.0 i_wr_clk = ~i_wr_clk; // 100 MHz
-    //forever #2.5 i_wr_clk = ~i_wr_clk; // 200 MHz
     forever #1.25 i_wr_clk = ~i_wr_clk; // 400 MHz
 end
 
 initial begin
     i_rd_clk = 0;
     forever #4.0 i_rd_clk = ~i_rd_clk; // 125 MHz
-    //forever #2.5 i_rd_clk = ~i_rd_clk; // 200 MHz
-    //forever #1.25 i_rd_clk = ~i_rd_clk; // 400 MHz
 end
 
 assign i_wr_rstn = RSTN;
 assign i_rd_rstn = RSTN_rd;
 
 //==============================================================================
-// Tasks
+// Tasks (M:1)
 //==============================================================================
-logic [63:0] rand64;
+
+logic [WIDTH*M_WRITERS-1:0] randvalue;
+integer randi;
 
 always @(posedge i_wr_clk or negedge i_wr_rstn) begin
-    if(!i_wr_rstn) rand64 <= 64'h0;
-    else      rand64 <= { $urandom, $urandom };
+    if(!i_wr_rstn) begin 
+        randvalue <= '0;
+    end else begin
+        for (randi=0;randi<M_WRITERS;randi++) begin
+            randvalue[randi*WIDTH +: WIDTH] <= $urandom_range(2**WIDTH-1,0); 
+        end
+    end
 end
-/*
-task automatic fifo_write(reg [WIDTH-1:0] data);
+
+task automatic fifo_write(logic [WIDTH-1:0] data, logic [M_WRITERS-1:0] M);
+int wa;
 begin
     @(posedge i_wr_clk);
-    i_wr_en   = 1'b1;
-    i_wr_data = data;
-    @(posedge i_wr_clk);
-    i_wr_en   = 1'b0;
-    
-    if (!o_wr_full) begin
-        $display("W @%0t data=%h remain=%0d full=%0b", $time, data, o_wr_remain, o_wr_full); 
-    end else begin
-        $display("W @%0t FIFO IS FULL, data=%h remain=%0d full=%0b", $time, data, o_wr_remain, o_wr_full); 
+    i_wr_en = M;
+    for (wa=0; wa<M_WRITERS; wa++) begin
+        i_wr_data[wa*WIDTH +: WIDTH] = (data ^ wa[WIDTH-1:0]) | {{(WIDTH-1){1'b0}},1'b1};
     end
+    @(posedge i_wr_clk);
+    i_wr_en = 0;
+    i_wr_data = '0;
 end
 endtask
 
@@ -171,179 +127,237 @@ begin
     i_rd_en = 1'b1;
     @(posedge i_rd_clk);
     i_rd_en = 1'b0;
-    
-    if (!o_rd_empty) begin
-        $display("R @%0t data=%h depth=%0d empty=%0b", $time, o_rd_data, o_rd_depth, o_rd_empty);    
+end
+endtask
+
+//==============================================================================
+// Tasks (1:N)
+//==============================================================================
+/*
+logic [WR_WIDTH-1:0] randvalue;
+integer randi;
+
+always @(posedge i_wr_clk or negedge i_wr_rstn) begin
+    if(!i_wr_rstn) begin 
+        randvalue <= '0;
     end else begin
-        $display("R @%0t FIFO IS EMPTY, data=%h remain=%0d empty=%0b", $time, o_rd_data, o_rd_depth, o_rd_empty); 
+        for (randi=0;randi<8;randi++) begin
+            randvalue[randi*WIDTH +: WIDTH] <= $urandom_range(2**WIDTH-1,0); 
+        end
     end
 end
-endtask*/
 
-task automatic fifo_write(logic [WIDTH-1:0] data, logic [M_WRITERS-1:0] M);
+task automatic fifo_write(logic [WR_WIDTH-1:0] data);
 begin
     @(posedge i_wr_clk);
-    i_wr_en = M;
-    i_wr_data[M*WIDTH +:WIDTH] = data;
+    i_wr_en = 1'b1;
+    i_wr_data = data;
     @(posedge i_wr_clk);
-    i_wr_en = 0;
+    i_wr_en = 1'b0;
+    i_wr_data = '0;
 end
 endtask
 
-task automatic fifo_read(logic [$clog2(N_READERS)-1:0] N);
+task automatic fifo_read(logic [N_READERS-1:0] N);
 begin
     @(posedge i_rd_clk);
-    i_rd_en[N] = 1'b1;
+    i_rd_en = N;
     @(posedge i_rd_clk);
-    i_rd_en[N] = 1'b0;
+    i_rd_en = '0;
 end
 endtask
+*/
 //==============================================================================
 // Stimulus
 //==============================================================================
 integer i;
 
 initial begin
-    // init
-    i_wr_en   = 0;
-    i_rd_en   = 0;
-    i_wr_data = 0;
+    i_wr_en   = '0;
+    i_rd_en   = '0;
+    i_wr_data = '0;
 
     wait(RSTN_rd);
     repeat (3) @(posedge i_wr_clk);
     repeat (3) @(posedge i_rd_clk);
 
-    `DISP_SECTION("SCENARIO: FILL FIFO UNTIL FULL");
-
-    //--------------------------------------------------------------------------
-    // 1) WRITE ONLY → FIFO 가득 채우기
-    //--------------------------------------------------------------------------
-    for (;(o_wr_full == 0);) begin
-        fifo_write({rand64, 1'b1}, $urandom_range(2**M_WRITERS-1, 0));
+    while (!o_wr_full) begin
+        //fifo_write(randvalue); 
+        fifo_write(randvalue, $urandom_range(2**M_WRITERS-1, 0));
     end
 
-    `DISP_SECTION("FIFO SHOULD BE FULL NOW");
+    //repeat (10) fifo_read($urandom_range(2**N_READERS-1, 0));
+    repeat (10) fifo_read();
 
-    //--------------------------------------------------------------------------
-    // 2) READ 시작 → FULL 해제 확인
-    //--------------------------------------------------------------------------
-    `DISP_SECTION("START READ → FULL RELEASE");
-
-    repeat (10) fifo_read($urandom_range(N_READERS-1, 0));
-
-    //--------------------------------------------------------------------------
-    // 3) fork/join으로 동시 수행
-    //--------------------------------------------------------------------------
     fork
         begin : WR_THREAD
             for (int k = 0; k < NUM; k++) begin
-                fifo_write({rand64, 1'b1}, $urandom_range(M_WRITERS-1, 0));
-                // (옵션) 너무 한쪽으로 몰아치지 않게 가끔 쉬고 싶으면:
-                // if ((k % 32) == 31) repeat(1) @(posedge i_wr_clk);
-                //if (k == (NUM >> 2)) begin
-                //    RSTN = 0;// 리셋
-                //    $display("WRITE RESET im");
-                //end else if (k == (NUM >> 2) + (NUM >> 5)) begin
-                //    RSTN = 1;
-                //    $display("WRITE RESET GGUIT");
-                //end
+                //fifo_write(randvalue); 
+                fifo_write(randvalue, $urandom_range(2**M_WRITERS-1, 0));
             end
         end
 
         begin : RD_THREAD
             for (int k = 0; k < NUM; k++) begin
-                fifo_read($urandom_range(N_READERS-1, 0));
-                // (옵션) read를 더 느리게 만들어 full을 더 잘 보고 싶으면:
-                // repeat(1) @(posedge i_rd_clk);
-                //if (k == (NUM >> 4) + (NUM >> 6) + (NUM >> 8)) begin
-                //    RSTN_rd = 0;// 리셋
-                //    $display("READ RESET im");
-                //end else if (k == (NUM >> 4) + (NUM >> 6) + (NUM >> 8) + 20) begin
-                //    RSTN_rd = 1;
-                //    $display("READ RESET GGUIT");
-                //end
+                //fifo_read($urandom_range(2**N_READERS-1, 0));
+                fifo_read();
             end
         end
     join_any
 
-    //--------------------------------------------------------------------------
-    // 4) 마무리: 모두 읽어서 empty 확인
-    //--------------------------------------------------------------------------
-    `DISP_SECTION("FINAL DRAIN");
-
     while(!o_rd_aempty) begin 
-        fifo_read(rand64[$clog2(N_READERS)-1:0]);
+        //fifo_read($urandom_range(2**N_READERS-1, 0));
+        fifo_read();
     end
 
     repeat (5) @(posedge i_rd_clk);
 
-    `DISP_TEST_TAG("✅ FIFO FULL/EMPTY DEMO PASSED");
     $finish;
 end
+    //--------------------------------------------------------------------------
+    // 파일 생성
+    //--------------------------------------------------------------------------
+    integer fd_wr, fd_rd;//, result;
+    string wr_fname;
+    string rd_fname;
+    //string result_fname;
 
-//--------------------------------------------------------------------------
-// 파일 생성
-//--------------------------------------------------------------------------
-integer fd_wr, fd_rd, result;
+    initial begin
+    ////////////////////////// M:1 /////////////////////////////////
+        wr_fname     = $sformatf("WRITE_DATA_M%0d.txt", M_WRITERS);
+        rd_fname     = $sformatf("READ_DATA_M%0d.txt",  M_WRITERS);
+        //result_fname = $sformatf("RESULT_M%d.txt",     M_WRITERS);
+        
+    ////////////////////////// 1:N /////////////////////////////////
+        //wr_fname     = $sformatf("WRITE_DATA_M%0d.txt", N_READERS);
+        //rd_fname     = $sformatf("READ_DATA_M%0d.txt",  N_READERS);
+        //result_fname = $sformatf("RESULT_M%d.txt",     N_READERS);
 
-initial begin
-    fd_wr = $fopen("WRITE_DATA.txt", "w");
-    fd_rd = $fopen("READ_DATA.txt", "w");
-    result = $fopen("RESULT.txt", "w");
+        fd_wr = $fopen(wr_fname, "w");
+        fd_rd = $fopen(rd_fname, "w");
+        //result = $fopen(result_fname, "w");
 
-    if (fd_wr == 0) begin
-        $display("❌ DEBUG: failed to open %s", "WRITE_DATA");
-        $finish;
+        if (fd_wr == 0) begin
+            $display("❌ DEBUG: failed to open %s", "WRITE_DATA");
+            $finish;
+        end
+        if (fd_rd == 0) begin
+            $display("❌ DEBUG: failed to open %s", "READ_DATA");
+            $finish;
+        end
+        //if (result == 0) begin
+        //    $display("❌ DEBUG: failed to open %s", "READ_DATA");
+        //    $finish;
+        //end            
     end
-    if (fd_rd == 0) begin
-        $display("❌ DEBUG: failed to open %s", "READ_DATA");
-        $finish;
-    end
-    if (result == 0) begin
-        $display("❌ DEBUG: failed to open %s", "READ_DATA");
-        $finish;
-    end            
-end
 
-wire [1:0] wr_condi = {i_wr_en, o_wr_full};
-wire [1:0] rd_condi = {i_rd_en, o_rd_empty};
+    ////////////////////////// M:1 /////////////////////////////////
+    
+    wire [M_WRITERS-1:0] wr_req = i_wr_en & {M_WRITERS{~o_wr_full}};
+    integer wk;
+    integer write_trial, read_trial;
+    integer write_success, read_success;
 
-always @(posedge i_wr_clk) begin
-    //if ((wr_condi == 2'b10) && i_wr_rstn && i_rd_rstn) begin
-    if ((wr_condi == 2'b10)) begin
-        $fdisplay(fd_wr, "%d", i_wr_data);
+    initial begin
+        write_trial = 0;
+        read_trial = 0;
+        write_success = 0;
+        read_success = 0;
     end
-end
 
-always @(posedge i_rd_clk) begin
-    //if ((rd_condi == 2'b10) && i_wr_rstn && i_rd_rstn) begin
-    if ((rd_condi == 2'b10)) begin
-        $fdisplay(fd_rd, "%d", o_rd_data);
+    always @(negedge i_wr_clk) begin
+        // MUX
+        for (wk=0; wk<M_WRITERS; wk=wk+1) begin
+            if (wr_req[wk]) begin
+                $fdisplay(fd_wr, "%d", i_wr_data[wk*WIDTH +: WIDTH]);
+                write_success = write_success + 1;
+            end
+        end
+        if (i_wr_en) begin
+            write_trial = write_trial + 1;
+        end
+    end    
+    
+    wire rd_req = i_rd_en & (~o_rd_empty);
+    always @(negedge i_rd_clk) begin
+        if (rd_req) begin
+            $fdisplay(fd_rd, "%d", o_rd_data);
+            read_success = read_success + 1;
+        end
+        if (i_rd_en) begin
+            read_trial = read_trial + 1;
+        end
     end
-end
+
+////////////////////////// 1:N /////////////////////////////////
 /*
-final begin
-    $fdisplay(result, "");
-    $fdisplay(result, "------------------------");
-    $fdisplay(result, "----------- write -------");
-    $fdisplay(result, "------------------------");
-    $fdisplay(result, "write trial count : %0d", o_wr_trial);
-    $fdisplay(result, "write success cnt : %0d", o_wr_count);
-    $fdisplay(result, "write fail    cnt : %0d", o_wr_fail);
+    wire wr_req = i_wr_en & (~o_wr_full);
+    integer wk;
+    integer write_trial, read_trial;
+    integer write_success, read_success;
+    
+    initial begin
+        write_trial = 0;
+        read_trial = 0;
+        write_success = 0;
+        read_success = 0;
+    end
 
-    $fdisplay(result, "");
-    $fdisplay(result, "------------------------");
-    $fdisplay(result, "----------- read --------");
-    $fdisplay(result, "------------------------");
-    $fdisplay(result, "read  trial count : %0d", o_rd_trial);
-    $fdisplay(result, "read  success cnt : %0d", o_rd_count);
-    $fdisplay(result, "read  fail    cnt : %0d", o_rd_fail);
+    always @(negedge i_wr_clk) begin
+        if (wr_req) begin
+            for (wk=0; wk<WR_WIDTH/WIDTH; wk=wk+1) begin
+                $fdisplay(fd_wr, "%d", i_wr_data[wk*WIDTH +: WIDTH]);
+            end
+            write_success = write_success + 1;
+        end
+        if (i_wr_en) begin
+            write_trial = write_trial + 1;
+        end
+    end
+    
+    integer rk;
+    always @(negedge i_rd_clk) begin
+        for (rk=0;rk<N_READERS;rk++) begin
+            if (o_rd_valid[rk]) begin
+                $fdisplay(fd_rd, "%d", o_rd_data[rk*WIDTH +: WIDTH]);
+                read_success = read_success + 1;
+            end        
+            if (i_rd_en[rk]) begin
+                read_trial = read_trial + 1;
+            end    
+        end
+    end    
+    */
+////////////////////////// M:1 /////////////////////////////////
+    
+    integer fd;
+    initial begin 
+        fd = $fopen($sformatf("final_M%0d.txt", M_WRITERS), "w"); 
+    end
 
-    $fdisplay(result, "========== DEBUG RESULT END ==========");
+    final begin
+        $fdisplay(fd, "FINAL REPORT(M:1) %d", M_WRITERS);
+        $fdisplay(fd, "write trial = %d", write_trial);
+        $fdisplay(fd, "write success = %d", write_success);
+        $fdisplay(fd, "read trial = %d", read_trial);
+        $fdisplay(fd, "read success = %d", read_success);
+        $fclose(fd);
+    end
 
-    $fclose(fd_wr);
-    $fclose(fd_rd);
-    $fclose(result);
-end*/
+////////////////////////// 1:N /////////////////////////////////
+/*
+    integer fd;
+    initial begin 
+        fd = $fopen($sformatf("final_N%0d.txt", N_READERS), "w"); 
+    end
 
+    final begin
+        $fdisplay(fd, "FINAL REPORT(1:N) %d", N_READERS);
+        $fdisplay(fd, "write trial = %d", write_trial);
+        $fdisplay(fd, "write success = %d", write_success);
+        $fdisplay(fd, "read trial = %d", read_trial);
+        $fdisplay(fd, "read success = %d", read_success);
+        $fclose(fd);
+    end
+*/
 endmodule
