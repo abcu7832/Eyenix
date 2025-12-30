@@ -23,7 +23,7 @@ initial begin
     RSTN_rd = 1;
 end
 
-localparam WR_WIDTH = WIDTH * N_READERS;//64
+localparam WR_WIDTH = WIDTH * N_READERS;
 
 logic                       i_wr_clk;
 logic                       i_wr_rstn;
@@ -182,32 +182,32 @@ initial begin
     repeat (3) @(posedge i_rd_clk);
 
     while (!o_wr_full) begin
-        //fifo_write(randvalue); 
-        fifo_write(randvalue, $urandom_range(2**M_WRITERS-1, 0));
+        //fifo_write(randvalue); // 1:N
+        fifo_write(randvalue, $urandom_range(2**M_WRITERS-1, 0)); // M:1
     end
 
-    //repeat (10) fifo_read($urandom_range(2**N_READERS-1, 0));
-    repeat (10) fifo_read();
+    //repeat (10) fifo_read($urandom_range(2**N_READERS-1, 0)); // 1:N
+    repeat (10) fifo_read(); // M:1
 
     fork
         begin : WR_THREAD
             for (int k = 0; k < NUM; k++) begin
-                //fifo_write(randvalue); 
-                fifo_write(randvalue, $urandom_range(2**M_WRITERS-1, 0));
+                //fifo_write(randvalue); // 1:N
+                fifo_write(randvalue, $urandom_range(2**M_WRITERS-1, 0)); // M:1
             end
         end
 
         begin : RD_THREAD
             for (int k = 0; k < NUM; k++) begin
-                //fifo_read($urandom_range(2**N_READERS-1, 0));
+                //fifo_read($urandom_range(2**N_READERS-1, 0)); // 1:N
                 fifo_read();
             end
         end
     join_any
 
     while(!o_rd_aempty) begin 
-        //fifo_read($urandom_range(2**N_READERS-1, 0));
-        fifo_read();
+        //fifo_read($urandom_range(2**N_READERS-1, 0)); // 1:N
+        fifo_read(); // M:1
     end
 
     repeat (5) @(posedge i_rd_clk);
@@ -217,25 +217,21 @@ end
     //--------------------------------------------------------------------------
     // 파일 생성
     //--------------------------------------------------------------------------
-    integer fd_wr, fd_rd;//, result;
+    integer fd_wr, fd_rd;
     string wr_fname;
     string rd_fname;
-    //string result_fname;
 
     initial begin
     ////////////////////////// M:1 /////////////////////////////////
         wr_fname     = $sformatf("WRITE_DATA_M%0d.txt", M_WRITERS);
         rd_fname     = $sformatf("READ_DATA_M%0d.txt",  M_WRITERS);
-        //result_fname = $sformatf("RESULT_M%d.txt",     M_WRITERS);
         
     ////////////////////////// 1:N /////////////////////////////////
         //wr_fname     = $sformatf("WRITE_DATA_M%0d.txt", N_READERS);
         //rd_fname     = $sformatf("READ_DATA_M%0d.txt",  N_READERS);
-        //result_fname = $sformatf("RESULT_M%d.txt",     N_READERS);
 
         fd_wr = $fopen(wr_fname, "w");
         fd_rd = $fopen(rd_fname, "w");
-        //result = $fopen(result_fname, "w");
 
         if (fd_wr == 0) begin
             $display("❌ DEBUG: failed to open %s", "WRITE_DATA");
@@ -245,10 +241,6 @@ end
             $display("❌ DEBUG: failed to open %s", "READ_DATA");
             $finish;
         end
-        //if (result == 0) begin
-        //    $display("❌ DEBUG: failed to open %s", "READ_DATA");
-        //    $finish;
-        //end            
     end
 
     ////////////////////////// M:1 /////////////////////////////////
@@ -289,6 +281,19 @@ end
         end
     end
 
+    integer fd;
+    initial begin 
+        fd = $fopen($sformatf("final_M%0d.txt", M_WRITERS), "w"); 
+    end
+
+    final begin
+        $fdisplay(fd, "FINAL REPORT(M:1) %d", M_WRITERS);
+        $fdisplay(fd, "write trial = %d", write_trial);
+        $fdisplay(fd, "write success = %d", write_success);
+        $fdisplay(fd, "read trial = %d", read_trial);
+        $fdisplay(fd, "read success = %d", read_success);
+        $fclose(fd);
+    end
 ////////////////////////// 1:N /////////////////////////////////
 /*
     wire wr_req = i_wr_en & (~o_wr_full);
@@ -326,26 +331,8 @@ end
                 read_trial = read_trial + 1;
             end    
         end
-    end    
-    */
-////////////////////////// M:1 /////////////////////////////////
-    
-    integer fd;
-    initial begin 
-        fd = $fopen($sformatf("final_M%0d.txt", M_WRITERS), "w"); 
     end
 
-    final begin
-        $fdisplay(fd, "FINAL REPORT(M:1) %d", M_WRITERS);
-        $fdisplay(fd, "write trial = %d", write_trial);
-        $fdisplay(fd, "write success = %d", write_success);
-        $fdisplay(fd, "read trial = %d", read_trial);
-        $fdisplay(fd, "read success = %d", read_success);
-        $fclose(fd);
-    end
-
-////////////////////////// 1:N /////////////////////////////////
-/*
     integer fd;
     initial begin 
         fd = $fopen($sformatf("final_N%0d.txt", N_READERS), "w"); 
@@ -359,5 +346,6 @@ end
         $fdisplay(fd, "read success = %d", read_success);
         $fclose(fd);
     end
-*/
+    */
+
 endmodule
