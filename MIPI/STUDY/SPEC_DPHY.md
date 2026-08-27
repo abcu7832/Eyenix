@@ -747,7 +747,7 @@ Sdc21 = "공통모드 → 차동모드 모드 변환" 정도를 나타냄 => **�
 |---|
 |![13](./IMG/D-PHY_Signaling_Levels.png)|
 | Push-pull 드라이버: HIGH일 땐 전원 쪽으로, LOW일 땐 그라운드 쪽으로 강하게 밀어붙이는 구조 |
-| 만약 HS 신호가 LP 리시버 입장에서 "알 수 없는 애매한 값"으로 보이면 LP-RX가 오작동할 수 있습니다. 그래서 아예 HS 신호 전체를 LP 리시버 관점에서는 "그냥 로우(0) 상태"로 보이도록 전압대를 낮게 설계해서, HS 전송 중에는 LP-RX가 안전하게 "LP-11(Stop state와 유사한 로우 상태)"로 오인한 채로 조용히 있게 만드는 것 |
+| 만약 HS 신호가 LP Rx 입장에서 "알 수 없는 애매한 값"으로 보이면 LP-RX가 오작동할 수 있습니다. 그래서 아예 HS 신호 전체를 LP Rx 관점에서는 "그냥 로우(0) 상태"로 보이도록 전압대를 낮게 설계해서, HS 전송 중에는 LP-RX가 안전하게 "LP-11(Stop state와 유사한 로우 상태)"로 오인한 채로 조용히 있게 만드는 것 |
 
 ## Driver Characteristics
 ### High-Speed Transmitter
@@ -803,4 +803,68 @@ Sdc21 = "공통모드 → 차동모드 모드 변환" 정도를 나타냄 => **�
 ### Details for LP Transmission
 ## Error Signaling
 ## Extended PPI
+```md
+# Functional PPI 확장 개요
+
+## 배경: 왜 PPI를 확장하는가
+
+- 프로토콜과의 인터페이스는 **Comma 심볼 사용을 관리**하기 위해 기능 핸들(TX 방향)과 플래그(RX 방향)로 확장됨
+- 필요 시, 송신측 PHY는 **TxReadyHS / TxReadyEsc** 신호로 프로토콜의 데이터 전달을 잠시 보류시킬 수 있음 (기존 PPI에 이미 존재하는 기능)
+
+---
+
+## TxValidHS 신호 (HS 데이터용 Valid 신호)
+
+- HS 데이터 전송을 위해 **TxValidHS** 신호가 PPI에 추가됨
+- **인코딩 동작 덕분에 Link의 Idle 상태 표현이 가능**해짐: 새로운 유효 데이터가 없을 때, 송신기가 준비되어 있어도 제공된 데이터가 유효하지 않으면 → **Idle 심볼을 스트림에 삽입**
+- 기존 기본 PHY PPI와 달리, **코딩된(coded) PHY의 Valid 신호는 TX/RX 양쪽 모두에서 능동적으로 데이터 관리에 활용 가능** → PHY/Protocol 계층에 더 큰 유연성 제공
+- LPDT(Low Power Data Transmission)에서는 이 Valid 시그널링이 이미 존재함
+- **TxValidHS 추가의 효과**: 기존 PPI 설명에 있던 "TxRequestHS 관련 제약(프로토콜이 항상 유효한 데이터를 제공해야 한다는 조건)"을 제거함
+
+---
+
+## RX 측 에러 플래그
+
+- 예상치 못한 시퀀스가 관찰될 경우, 에러를 프로토콜에 플래그로 알릴 수 있음
+- 많은 종류의 에러가 감지 가능하지만, **모든 에러 플래그를 구현할 필요는 없음**
+- 어떤 에러 플래그를 구현할지는 **구현자의 비용/효과(cost/benefit) 판단**에 달림
+- 이 에러 기능들은 **D-PHY 준수 여부에 영향을 주지 않음** (참고용 정보로만 제공됨)
+
+---
+
+## 공통 제약사항
+
+- 모든 제어 신호는 **TxByteClk 또는 RxByteClk에 동기화**되어야 함
+- 제어 신호 클럭 주파수는 **직렬 비트 레이트의 1/9 이상**이어야 함
+
+---
+
+## 표
+
+> 표는 **코딩 서브레이어(coding sub-layer, EPPI)** 위에 추가되는 PPI 신호들을 나열한 것
+
+즉, 기본 PPI 위에 **Comma 심볼 기반 코딩 계층을 다루기 위한 확장 신호 세트**가 표이며, TxValidHS/TxProMarker 계열은 필수적 기능 관리용, Rx 쪽 대부분(RxAlignError, RxBadSymbol, RxEoTError, RxIdle 등)은 **선택적(optional) 에러/상태 진단용 플래그**로 구성됩니다.
+```
+
+### Input
+| Symbol | Categories | Description |
+|---|---|---|
+| **TxProMarkerEsc** | MXAX (SXXA) | Functional handle to insert a Protocol-marker symbol in the serial stream for LPDT.<br>Active HIGH signal |
+| **TxProMarkerHS** | MXXX (SRXX) | Functional handle to insert a Protocol-marker symbol in the serial stream for HS transmission.<br>Active HIGH signal |
+| **TxValidHS** | MXXX (SRXX) | Functional handle for the protocol to hold on providing data to the PHY without ending the HS transmission. In the case of a continued transmission request without Valid data, the PHY coding layer inserts Idle symbols.<br>Active HIGH signal |
+
+### Output
+| Symbol | Categories | Description |
+|---|---|---|
+| **RxAlignErrorEsc** | SXAX (MXXA) | Flag to indicate that a Comma code has been observed in the LPDT stream that was not aligned with the assumed word boundary.<br>Active HIGH signal (optional) |
+| **RxAlignErrorHS** | SXXX (MRXX) | Flag to indicate that a Comma code has been observed during HS reception that was not aligned with the assumed word boundary.<br>Active HIGH signal (optional) |
+| **RxBadSymbolEsc** | SXAX (MXXA) | Flag to indicate that a non-existing symbol was received using LPDT.<br>Active HIGH signal (optional) |
+| **RxBadSymbolHS** | SXXX (MRXX) | Flag to indicate that a non-existing symbol was received in HS mode.<br>Active HIGH signal (optional) |
+| **RxEoTErrorEsc** | SXAX (MXXA) | Flag to indicate that at EoT, after LP transmission, a transition to LP-11 has been detected without being preceded by an EoT-marker symbol.<br>Active HIGH signal (optional) |
+| **RxEoTErrorHS** | SXXX (MRXX) | Flag to indicate that at EoT, after HS transmission, a transition to LP-11 has been detected without being preceded by an EoT-marker symbol.<br>Active HIGH signal (optional) |
+| **RxIdleEsc** | SXAX (MXXA) | Indication flag that Idle patterns are observed at the Lines during LPDT.<br>Active HIGH signal (optional) |
+| **RxIdleHS** | SXXX (MRXX) | Indication flag that Idle patterns are observed at the Lines in HS mode.<br>Active HIGH signal (optional) |
+| **RxProMarkerEsc** | SXAX (MXXA) | Functional flag to know that a Protocol-marker symbol occurred in the serial stream using LPDT. This is communicated to the protocol synchronous with the data, exactly at the position where it occurred. Therefore, the interface either shows a flag plus non-valid data or no-flag with valid data.<br>Active HIGH signal |
+| **RxProMarkerHS** | SXXX (MRXX) | Functional flag to know that a Protocol-marker symbol occurred in the serial stream for HS mode. This is communicated to the protocol synchronous with the ByteClk, exactly at the position where it occurred. Therefore, the interface either shows a flag plus non-valid data or no-flag with valid data.<br>Active HIGH signal |
+
 ## Complete Code Set
